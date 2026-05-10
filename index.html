@@ -61,30 +61,43 @@
     <script>
       ;(() => {
         const storageKey = "imt_api_base_url"
+        const getDefaultApiBaseUrl = () => ""
 
         const normalizeBaseUrl = value => {
           const raw = String(value || "").trim()
           if (!raw) return ""
           const withProtocol = /^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(raw) ? raw : `http://${raw}`
-          return withProtocol.replace(/\/+$/, "")
+          try {
+            const parsed = new URL(withProtocol)
+            return parsed.origin
+          } catch (e) {
+            return withProtocol.replace(/\/+$/, "")
+          }
         }
 
         const getApiBaseUrl = () => {
           const input = document.getElementById("imt-api-base-input")
           const inputValue = input ? input.value : ""
-          return normalizeBaseUrl(inputValue || window.__IMT_API_BASE_URL__ || localStorage.getItem(storageKey))
+          return normalizeBaseUrl(inputValue || window.__IMT_API_BASE_URL__ || localStorage.getItem(storageKey) || getDefaultApiBaseUrl())
+        }
+
+        const buildApiProxyUrl = path => {
+          const baseUrl = getApiBaseUrl()
+          if (!baseUrl || window.location.protocol !== "https:") return null
+          return `/.netlify/functions/api-proxy?path=${encodeURIComponent(path)}`
         }
 
         const rewriteApiUrl = input => {
           const baseUrl = getApiBaseUrl()
-          if (!baseUrl || typeof input !== "string") return input
+          if (typeof input !== "string") return input
 
-          if (input.startsWith("/api/")) return `${baseUrl}${input}`
+          if (input.startsWith("/api/")) return buildApiProxyUrl(input) || (baseUrl ? `${baseUrl}${input}` : input)
 
           try {
             const parsed = new URL(input, window.location.href)
             if (parsed.pathname.startsWith("/api/") && parsed.origin === window.location.origin) {
-              return `${baseUrl}${parsed.pathname}${parsed.search}${parsed.hash}`
+              const path = `${parsed.pathname}${parsed.search}${parsed.hash}`
+              return buildApiProxyUrl(path) || (baseUrl ? `${baseUrl}${path}` : input)
             }
           } catch (e) {}
 
@@ -93,14 +106,28 @@
 
         const originalFetch = window.fetch
         window.fetch = function (input, init) {
+          const apiBaseUrl = getApiBaseUrl()
+          const withProxyHeader = requestInit => {
+            if (!apiBaseUrl || window.location.protocol !== "https:") return requestInit
+            const nextInit = Object.assign({}, requestInit || {})
+            nextInit.headers = new Headers(nextInit.headers || {})
+            nextInit.headers.set("X-Imt-Api-Origin", apiBaseUrl)
+            return nextInit
+          }
+
           if (typeof input === "string") {
-            return originalFetch.call(this, rewriteApiUrl(input), init)
+            return originalFetch.call(this, rewriteApiUrl(input), withProxyHeader(init))
           }
 
           if (input instanceof Request) {
             const rewrittenUrl = rewriteApiUrl(input.url)
             if (rewrittenUrl !== input.url) {
-              return originalFetch.call(this, new Request(rewrittenUrl, input), init)
+              const nextInit = Object.assign({}, init || {})
+              nextInit.headers = new Headers(init && init.headers ? init.headers : input.headers)
+              if (apiBaseUrl && window.location.protocol === "https:") {
+                nextInit.headers.set("X-Imt-Api-Origin", apiBaseUrl)
+              }
+              return originalFetch.call(this, new Request(rewrittenUrl, input), nextInit)
             }
           }
 
@@ -109,11 +136,20 @@
 
         const originalXhrOpen = XMLHttpRequest.prototype.open
         XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+          this.__imtApiBaseUrl = getApiBaseUrl()
           return originalXhrOpen.call(this, method, rewriteApiUrl(url), ...rest)
         }
 
+        const originalXhrSend = XMLHttpRequest.prototype.send
+        XMLHttpRequest.prototype.send = function (...args) {
+          if (this.__imtApiBaseUrl && window.location.protocol === "https:") {
+            this.setRequestHeader("X-Imt-Api-Origin", this.__imtApiBaseUrl)
+          }
+          return originalXhrSend.apply(this, args)
+        }
+
         window.__IMT_SET_API_BASE_URL__ = value => {
-          const baseUrl = normalizeBaseUrl(value)
+          const baseUrl = normalizeBaseUrl(value || getDefaultApiBaseUrl())
           window.__IMT_API_BASE_URL__ = baseUrl
           if (baseUrl) localStorage.setItem(storageKey, baseUrl)
           else localStorage.removeItem(storageKey)
@@ -720,8 +756,7 @@
         })
 
         clear.addEventListener("click", () => {
-          if (window.__IMT_SET_API_BASE_URL__) window.__IMT_SET_API_BASE_URL__("")
-          input.value = ""
+          input.value = window.__IMT_SET_API_BASE_URL__ ? window.__IMT_SET_API_BASE_URL__("") : ""
           showStatus("已清空")
         })
 
