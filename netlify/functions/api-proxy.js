@@ -19,33 +19,40 @@ exports.handler = async event => {
   }
 
   const targetUrl = new URL(path, targetOrigin)
-  if (event.rawQuery) {
-    const passthroughQuery = event.rawQuery
-      .split("&")
-      .filter(part => part && !part.startsWith("path="))
-      .join("&")
-    if (passthroughQuery) targetUrl.search = passthroughQuery
-  }
 
   const requestHeaders = new Headers()
-  for (const [key, value] of Object.entries(event.headers || {})) {
-    const lowerKey = key.toLowerCase()
-    if (
-      lowerKey === "host" ||
-      lowerKey === "connection" ||
-      lowerKey === "content-length" ||
-      lowerKey === "x-imt-api-origin"
-    ) {
-      continue
-    }
-    requestHeaders.set(key, value)
-  }
+  const contentType = event.headers["content-type"] || event.headers["Content-Type"]
+  const authorization = event.headers.authorization || event.headers.Authorization
+  const cookie = event.headers.cookie || event.headers.Cookie
+  if (contentType) requestHeaders.set("content-type", contentType)
+  if (authorization) requestHeaders.set("authorization", authorization)
+  if (cookie) requestHeaders.set("cookie", cookie)
+  requestHeaders.set("accept", event.headers.accept || event.headers.Accept || "application/json, text/plain, */*")
+  requestHeaders.set("user-agent", "NetlifyApiProxy/1.0")
 
-  const response = await fetch(targetUrl, {
-    method: event.httpMethod,
-    headers: requestHeaders,
-    body: ["GET", "HEAD"].includes(event.httpMethod) ? undefined : event.body,
-  })
+  let response
+  try {
+    response = await fetch(targetUrl, {
+      method: event.httpMethod,
+      headers: requestHeaders,
+      body: ["GET", "HEAD"].includes(event.httpMethod)
+        ? undefined
+        : event.isBase64Encoded
+          ? Buffer.from(event.body || "", "base64")
+          : event.body,
+      redirect: "manual",
+    })
+  } catch (error) {
+    return {
+      statusCode: 502,
+      headers: { "content-type": "application/json; charset=utf-8" },
+      body: JSON.stringify({
+        message: "Netlify function could not reach target API",
+        target: targetUrl.href,
+        reason: error && error.message ? error.message : String(error),
+      }),
+    }
+  }
 
   const responseHeaders = {}
   response.headers.forEach((value, key) => {
