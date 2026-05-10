@@ -67,12 +67,7 @@
           const raw = String(value || "").trim()
           if (!raw) return ""
           const withProtocol = /^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(raw) ? raw : `http://${raw}`
-          try {
-            const parsed = new URL(withProtocol)
-            return parsed.origin
-          } catch (e) {
-            return withProtocol.replace(/\/+$/, "")
-          }
+          return withProtocol.replace(/\/+$/, "")
         }
 
         const getApiBaseUrl = () => {
